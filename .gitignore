@@ -1,0 +1,6 @@
+/target/
+/dist/
+/.muxsift/
+/third_party/aria2-linux/aria2c
+/third_party/ffmpeg-linux/ffmpeg
+*.part

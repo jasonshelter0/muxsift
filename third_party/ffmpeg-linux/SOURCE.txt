@@ -1,0 +1,18 @@
+FFmpeg n9.0.2-3-ga5923073bf-20260923, GNU/Linux x86_64 LGPL static build
+
+Binary archive:
+https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-linux64-lgpl-9.0.tar.xz
+Archive SHA-256:
+1a88f2305c14c208aa4f252298cefa0b0c30485f20bebe181055ef50eb2a54f5
+ffmpeg SHA-256:
+0f6cc47f65ee6ffa0a689293671e3b2f7ca5664521b3a28a7cd159447011ade6
+
+Build project and reproducible build scripts:
+https://github.com/BtbN/FFmpeg-Builds
+Corresponding FFmpeg source commit:
+https://github.com/FFmpeg/FFmpeg/commit/a5923073bf
+FFmpeg source repository:
+https://git.ffmpeg.org/ffmpeg.git
+
+The binary reports an LGPLv3 build configuration and is distributed as a
+separate executable invoked by MuxSift. See LICENSE for the license text.

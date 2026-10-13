@@ -1,0 +1,40 @@
+{
+  "paths": {
+    "video": "./MuxSift/videos",
+    "audio": "./MuxSift/audio",
+    "subtitle": "./MuxSift/subtitles",
+    "transcript": "./MuxSift/transcripts"
+  },
+  "download": {
+    "backend": "aria2",
+    "aria2": "auto",
+    "max_concurrent_downloads": 3,
+    "split": 10,
+    "min_split_size": "15M"
+  },
+  "asr": {
+    "backend": "bcut",
+    "buzz": {
+      "project_dir": "",
+      "uv": "uv",
+      "bridge": "auto",
+      "model": "large-v3-turbo",
+      "device": "auto",
+      "compute_type": "default",
+      "language": null
+    }
+  },
+  "bcut": {
+    "cooldown_seconds": 20
+  },
+  "ai": {
+    "enabled": false,
+    "base_url": "https://api.openai.com/v1",
+    "model": "",
+    "api_key_env": "OPENAI_API_KEY",
+    "system_prompt": "你是一位专业的中文及多语种文字编辑与转写校对员。将用户提供的 SRT 字幕整理成干净、准确、按内容分段的 Markdown 笔记。删除序号和时间轴，合并碎片字幕，清理无意义口语、重复和明显错字，补全标点并规范中英文与数字。不得编造事实；不确定处标注 [疑似：xxx]。用 # 标题和必要的 ## 小标题组织内容，只在标题或小标题旁边加时间戳，只输出 Markdown。请一次性通读全部输入后再输出。"
+  },
+  "ui": {
+    "language": "zh-CN"
+  }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "muxsift-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+muxsift-core = { path = "../muxsift-core" }
+crossterm.workspace = true
+qrcode.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+ratatui.workspace = true
+tokio.workspace = true
+unicode-width.workspace = true

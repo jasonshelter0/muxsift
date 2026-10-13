@@ -1,0 +1,9 @@
+MuxSift Linux x86_64 package
+
+The bin/aria2c and bin/ffmpeg executables are independent runtime programs.
+Their build-specific license texts and source/build information are included
+under licenses/. Review those files before redistributing a package.
+
+The MuxSift Rust program does not contain or execute the original Electron
+application. Bilibili service access remains subject to Bilibili's terms and
+the user's applicable law.
