@@ -122,6 +122,8 @@ target/debug/muxsift frames ./lecture.mp4 --interval 0.5 --threshold 0.1 --min-g
 target/debug/muxsift frames ./lecture.mp4 --srt ./lecture.srt -o ./lecture-with-captions
 ```
 
+实验分支另有 `frames-proto`：使用 FFmpeg `scdet`、滚动阈值和多种视觉签名筛选候选帧，并记录每个采样帧的保留或丢弃原因。它不改变上面的 `frames` 命令。用法、三段视频的对比结果和限制见 [关键帧实验说明](docs/frames-prototype.md)。
+
 开发版还提供单条网页视频获取入口。先独立安装 yt-dlp，再运行 `fetch`；下载成功后可把输出媒体交给 `local` 或 `frames`。当前仅处理一个 URL 对应的单个视频，下载目录必须不存在，且不会修改 Bilibili 原生下载流程。
 
 ```bash

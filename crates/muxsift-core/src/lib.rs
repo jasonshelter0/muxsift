@@ -8,6 +8,7 @@ mod download;
 mod error;
 mod fetch;
 mod frames;
+mod frames_proto;
 mod input;
 mod local;
 mod models;
@@ -28,6 +29,11 @@ pub use download::{DownloadControl, DownloadProgress, mux, mux_audio};
 pub use error::{Error, Result};
 pub use fetch::{FetchOptions, fetch_with_yt_dlp};
 pub use frames::{FrameEntry, FrameManifest, FrameOptions, extract_scene_frames};
+#[cfg(feature = "ocr")]
+pub use frames_proto::OcrDiff;
+pub use frames_proto::{
+    FrameDecision, FramePrototype, FramePrototypeOptions, PrototypeFrame, extract_frame_prototype,
+};
 pub use input::{VideoInput, parse_video_input, resolve_video_input};
 pub use local::{LocalMediaEvent, LocalMediaOutput, LocalMediaRequest, process_local_media};
 pub use models::{

@@ -11,10 +11,11 @@ use indicatif::{ProgressBar, ProgressStyle};
 use muxsift_core::{
     AiClient, AiOptions, Aria2Manager, Aria2Options, AsrBackend, BiliClient, BuzzOptions,
     BuzzProgress, ClientOptions, DownloadProgress, Error, FetchOptions, FrameOptions,
-    LocalMediaEvent, LocalMediaRequest, LoginPoll, Result, ResumeWorkspace, SubtitleFormat,
-    SubtitleTrack, TranscriptFormat, extract_scene_frames, fetch_with_yt_dlp, final_output_path,
-    final_output_path_with_extension, mux, mux_audio, process_local_media, resolve_video_input,
-    sanitize_filename, set_bcut_cooldown_seconds, transcribe_audio_with_buzz,
+    FramePrototypeOptions, LocalMediaEvent, LocalMediaRequest, LoginPoll, Result, ResumeWorkspace,
+    SubtitleFormat, SubtitleTrack, TranscriptFormat, extract_frame_prototype, extract_scene_frames,
+    fetch_with_yt_dlp, final_output_path, final_output_path_with_extension, mux, mux_audio,
+    process_local_media, resolve_video_input, sanitize_filename, set_bcut_cooldown_seconds,
+    transcribe_audio_with_buzz,
 };
 use muxsift_tui::{Language, MediaBackend, TuiOptions};
 use qrcode::{QrCode, render::unicode};
@@ -202,6 +203,41 @@ enum Command {
         #[arg(long, default_value_t = 0.15)]
         threshold: f64,
         /// Minimum seconds between selected frames (0-600).
+        #[arg(long, default_value_t = 2.0)]
+        min_gap: f64,
+    },
+    /// Experimental frame selector with FFmpeg scdet, adaptive scores and visual deduplication.
+    FramesProto {
+        /// Existing local video file.
+        input: PathBuf,
+        /// New output directory; defaults to <video-name>-frames-proto.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Seconds between sampled frames.
+        #[arg(long, default_value_t = 1.0)]
+        interval: f64,
+        /// Absolute FFmpeg scdet threshold, on its 0–100 scale.
+        #[arg(long, default_value_t = 5.0)]
+        content_threshold: f64,
+        /// Score divided by recent rolling mean must exceed this value.
+        #[arg(long, default_value_t = 2.0)]
+        adaptive_threshold: f64,
+        /// Number of recent scores used for the rolling mean.
+        #[arg(long, default_value_t = 12)]
+        adaptive_window: usize,
+        /// Minimum absolute score required for an adaptive detection.
+        #[arg(long, default_value_t = 0.75)]
+        min_content: f64,
+        /// Maximum 64-bit pHash Hamming distance considered near-duplicate.
+        #[arg(long, default_value_t = 4)]
+        phash_distance: u32,
+        /// Maximum normalized RGB histogram distance considered near-duplicate.
+        #[arg(long, default_value_t = 0.025)]
+        hist_distance: f64,
+        /// Maximum changed-pixel fraction considered near-duplicate.
+        #[arg(long, default_value_t = 0.02)]
+        spatial_distance: f64,
+        /// Minimum seconds between selected frames.
         #[arg(long, default_value_t = 2.0)]
         min_gap: f64,
     },
@@ -421,6 +457,52 @@ async fn run(mut cli: Cli) -> Result<()> {
         println!("HTML: {}", output_dir.join("frames.html").display());
         return Ok(());
     }
+    if let Some(Command::FramesProto {
+        input,
+        output,
+        interval,
+        content_threshold,
+        adaptive_threshold,
+        adaptive_window,
+        min_content,
+        phash_distance,
+        hist_distance,
+        spatial_distance,
+        min_gap,
+    }) = &cli.command
+    {
+        let output_dir = output.clone().unwrap_or_else(|| {
+            input.with_file_name(format!(
+                "{}-frames-proto",
+                input.file_stem().unwrap_or_default().to_string_lossy()
+            ))
+        });
+        eprintln!("Scanning video with visual fusion: {}", input.display());
+        let manifest = extract_frame_prototype(&FramePrototypeOptions {
+            input: input.clone(),
+            output_dir: output_dir.clone(),
+            ffmpeg: cli.ffmpeg.clone(),
+            sample_interval_seconds: *interval,
+            content_threshold: *content_threshold,
+            adaptive_threshold: *adaptive_threshold,
+            adaptive_window: *adaptive_window,
+            min_content: *min_content,
+            phash_duplicate_distance: *phash_distance,
+            histogram_duplicate_distance: *hist_distance,
+            spatial_duplicate_distance: *spatial_distance,
+            min_gap_seconds: *min_gap,
+        })
+        .await?;
+        println!(
+            "{} selected frames from {} samples: {}",
+            manifest.frames.len(),
+            manifest.decisions.len(),
+            output_dir.display()
+        );
+        println!("Timeline: {}", output_dir.join("timeline.json").display());
+        println!("Markdown: {}", output_dir.join("frames.md").display());
+        return Ok(());
+    }
     let config_path = cli.config.clone().unwrap_or_else(config::default_path);
     let app_config = config::load(&config_path)?;
     set_bcut_cooldown_seconds(app_config.bcut.cooldown_seconds);
@@ -561,6 +643,9 @@ async fn run(mut cli: Cli) -> Result<()> {
     match &cli.command {
         Some(Command::Fetch { .. }) => unreachable!("fetch command was handled above"),
         Some(Command::Frames { .. }) => unreachable!("frames command was handled above"),
+        Some(Command::FramesProto { .. }) => {
+            unreachable!("frames-proto command was handled above")
+        }
         Some(Command::Local { .. }) => unreachable!("local command was handled above"),
         Some(Command::Login) => return login(&client).await,
         Some(Command::Logout) => {

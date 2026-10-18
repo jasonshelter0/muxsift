@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# Reserved for an optional OCR diff backend. The visual prototype does not require OCR.
+ocr = []
+
 [dependencies]
 bytes.workspace = true
 directories.workspace = true
@@ -16,3 +20,5 @@ thiserror.workspace = true
 tokio.workspace = true
 url.workspace = true
 rand = "0.8"
+img_hash = "3.2"
+image = { version = "0.23", default-features = false, features = ["jpeg"] }
