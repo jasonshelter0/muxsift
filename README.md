@@ -49,6 +49,8 @@ AI 提炼
 - OpenAI-compatible AI 整理：保留原始 SRT，并输出同名 Markdown。
 - 阶段检查点：下载、FFmpeg、ASR 或 AI 失败后，可用 `--resume` 或 TUI 的 `r` 从最近成功阶段继续。
 - 已存在 SRT 时可跳过下载与 ASR，直接继续 AI 整理。
+- 本地视频场景候选帧提取：按可调采样间隔和变化阈值输出截图、JSON 时间线及 Markdown 索引。
+- 开发版 CLI 可借助单独安装的 yt-dlp 获取一个网页视频；场景帧索引可对齐已有 SRT 字幕。
 - 中文默认 TUI、English/中文切换、CJK 光标宽度、粘贴和任务树。
 - Ubuntu x86_64 发行包，包含 `aria2c`、`ffmpeg`、Buzz bridge、许可证和双语指南。
 
@@ -58,7 +60,7 @@ AI 提炼
 - yt-dlp 来源适配器。
 - 用工件图统一描述视频、音频、字幕、关键帧和 AI 输出之间的依赖。
 - 用户可配置的中间文件保留策略。
-- 视频关键帧提取处理器。
+- 课程知识关键帧识别：区分 PPT 动画、代码改动和公式增量；当前场景候选帧需要人工核对。
 - 让 AI 总结可以选择字幕、关键帧、元数据或它们的组合。
 - 通用任务清单、来源与处理参数记录，以及可迁移的流水线配置格式。
 
@@ -109,6 +111,23 @@ target/debug/muxsift local ./meeting.wav --asr buzz --buzz-project /path/to/buzz
 Bcut 需先运行 `target/debug/muxsift login`，并会上传音频。Buzz 的 `uv`、模型等参数可在 JSON 配置的 `asr.buzz` 下设置。AI 需在配置中设置 `ai.enabled: true`、`ai.model`，并导出 `ai.api_key_env` 指定的环境变量；查看路径用 `target/debug/muxsift config show`。仅生成 SRT 可加 `--transcript-only`，AI 失败后可加 `--resume` 复用已有 SRT。
 
 TUI 中按 `a` 输入本地文件或文件夹路径；文件夹会递归打开目录树选择器，勾选后为每个文件建立任务。按 `c` 打开统一设置窗口（转写后端、Buzz 路径、AI 和输出目录等），按 `C` 可直达 AI 分类；按 `A`、`S` 可启动全部任务，失败后按 `r` 继续。批量输出保留输入目录层级。
+
+### 本地视频场景候选帧
+
+`frames` 命令按固定间隔采样，以 FFmpeg 的场景变化分数筛选截图，并生成 `timeline.json`、`frames.md` 和可搜索字幕的离线 `frames.html`。输出目录必须不存在；原视频不会被修改。阈值越低候选越多。它是课程关键帧的离线基线，尚不识别 PPT 动画、代码和公式的知识增量。
+
+```bash
+target/debug/muxsift frames ./lecture.mp4 -o ./lecture-frames
+target/debug/muxsift frames ./lecture.mp4 --interval 0.5 --threshold 0.1 --min-gap 1
+target/debug/muxsift frames ./lecture.mp4 --srt ./lecture.srt -o ./lecture-with-captions
+```
+
+开发版还提供单条网页视频获取入口。先独立安装 yt-dlp，再运行 `fetch`；下载成功后可把输出媒体交给 `local` 或 `frames`。当前仅处理一个 URL 对应的单个视频，下载目录必须不存在，且不会修改 Bilibili 原生下载流程。
+
+```bash
+target/debug/muxsift fetch 'https://www.youtube.com/watch?v=VIDEO_ID' -o ./web-media
+# 使用 fetch 打印的实际 Media 路径作为 frames 或 local 的输入
+```
 
 ```bash
 cargo fmt --check

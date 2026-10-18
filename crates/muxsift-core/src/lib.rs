@@ -6,6 +6,8 @@ mod buzz;
 mod client;
 mod download;
 mod error;
+mod fetch;
+mod frames;
 mod input;
 mod local;
 mod models;
@@ -24,6 +26,8 @@ pub use buzz::{AsrBackend, BuzzOptions, BuzzProgress, transcribe_audio_with_buzz
 pub use client::{BiliClient, ClientOptions};
 pub use download::{DownloadControl, DownloadProgress, mux, mux_audio};
 pub use error::{Error, Result};
+pub use fetch::{FetchOptions, fetch_with_yt_dlp};
+pub use frames::{FrameEntry, FrameManifest, FrameOptions, extract_scene_frames};
 pub use input::{VideoInput, parse_video_input, resolve_video_input};
 pub use local::{LocalMediaEvent, LocalMediaOutput, LocalMediaRequest, process_local_media};
 pub use models::{

@@ -15,6 +15,10 @@ In TUI: `a` add, `Space` mark, `S` start marked, `Enter` start current, `x` canc
 
 ## Local video and audio
 
+The development build adds scene candidates for local lectures. Build from source, then run `target/debug/muxsift frames ./lecture.mp4 -o ./lecture-frames`. The new directory contains screenshots, `timeline.json`, a linked `frames.md` index, and a searchable offline `frames.html` viewer. Adjust `--interval`, `--threshold`, and `--min-gap` to tune sampling and sensitivity. Pass `--srt ./lecture.srt` to associate existing subtitles with the preceding frame in every index. This command is not in the v0.1.0 release; review animations and incremental writing manually. The output directory must not already exist.
+
+The development build also accepts one public video URL through a separately installed yt-dlp: `target/debug/muxsift fetch 'https://www.youtube.com/watch?v=VIDEO_ID' -o ./web-media`. It prints the resulting media path, which can then be passed to `local` or `frames`. The new directory must not exist. Playlist processing and user yt-dlp configuration are outside this command's current scope. This does not change the native Bilibili downloader and is not in v0.1.0.
+
 The `local` command extracts audio with FFmpeg, transcribes it to SRT, and sends the SRT to the configured AI provider to create same-name Markdown notes:
 
 ```bash

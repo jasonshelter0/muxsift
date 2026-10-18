@@ -10,10 +10,11 @@ use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use muxsift_core::{
     AiClient, AiOptions, Aria2Manager, Aria2Options, AsrBackend, BiliClient, BuzzOptions,
-    BuzzProgress, ClientOptions, DownloadProgress, Error, LocalMediaEvent, LocalMediaRequest,
-    LoginPoll, Result, ResumeWorkspace, SubtitleFormat, SubtitleTrack, TranscriptFormat,
-    final_output_path, final_output_path_with_extension, mux, mux_audio, process_local_media,
-    resolve_video_input, sanitize_filename, set_bcut_cooldown_seconds, transcribe_audio_with_buzz,
+    BuzzProgress, ClientOptions, DownloadProgress, Error, FetchOptions, FrameOptions,
+    LocalMediaEvent, LocalMediaRequest, LoginPoll, Result, ResumeWorkspace, SubtitleFormat,
+    SubtitleTrack, TranscriptFormat, extract_scene_frames, fetch_with_yt_dlp, final_output_path,
+    final_output_path_with_extension, mux, mux_audio, process_local_media, resolve_video_input,
+    sanitize_filename, set_bcut_cooldown_seconds, transcribe_audio_with_buzz,
 };
 use muxsift_tui::{Language, MediaBackend, TuiOptions};
 use qrcode::{QrCode, render::unicode};
@@ -173,6 +174,37 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Download one web video with yt-dlp into a new directory.
+    Fetch {
+        /// Public video URL supported by the installed yt-dlp.
+        url: String,
+        /// New directory for the downloaded media.
+        #[arg(short, long)]
+        output: PathBuf,
+        /// yt-dlp executable or absolute path.
+        #[arg(long, default_value = "yt-dlp")]
+        yt_dlp: PathBuf,
+    },
+    /// Extract scene-change frame candidates and a timestamped timeline from a local video.
+    Frames {
+        /// Existing local video file.
+        input: PathBuf,
+        /// Existing SRT file to align with the selected frames.
+        #[arg(long)]
+        srt: Option<PathBuf>,
+        /// New output directory; defaults to <video-name>-frames beside the input.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Seconds between sampled frames (0.2-60).
+        #[arg(long, default_value_t = 1.0)]
+        interval: f64,
+        /// FFmpeg scene-change threshold (0-1); lower values keep more frames.
+        #[arg(long, default_value_t = 0.15)]
+        threshold: f64,
+        /// Minimum seconds between selected frames (0-600).
+        #[arg(long, default_value_t = 2.0)]
+        min_gap: f64,
+    },
     /// Transcribe a local video or audio file and optionally organize it with AI.
     Local {
         /// Existing video or audio file.
@@ -329,6 +361,66 @@ fn finish(result: Result<()>) -> ExitCode {
 
 async fn run(mut cli: Cli) -> Result<()> {
     cli.ffmpeg = resolve_ffmpeg_executable(&cli.ffmpeg);
+    if let Some(Command::Fetch {
+        url,
+        output,
+        yt_dlp,
+    }) = &cli.command
+    {
+        if cli.media_proxy.is_some() {
+            return Err(Error::InvalidInput(
+                "fetch supports --proxy, but not the Bilibili-only --media-proxy".into(),
+            ));
+        }
+        eprintln!("Fetching one video: {url}");
+        let media = fetch_with_yt_dlp(&FetchOptions {
+            url: url.clone(),
+            output_dir: output.clone(),
+            executable: yt_dlp.clone(),
+            ffmpeg: cli.ffmpeg.clone(),
+            proxy: cli.proxy.clone(),
+            no_proxy: cli.no_proxy,
+        })
+        .await?;
+        println!("Media: {}", media.display());
+        return Ok(());
+    }
+    if let Some(Command::Frames {
+        input,
+        srt,
+        output,
+        interval,
+        threshold,
+        min_gap,
+    }) = &cli.command
+    {
+        let output_dir = output.clone().unwrap_or_else(|| {
+            input.with_file_name(format!(
+                "{}-frames",
+                input.file_stem().unwrap_or_default().to_string_lossy()
+            ))
+        });
+        eprintln!("Scanning video for scene changes: {}", input.display());
+        let manifest = extract_scene_frames(&FrameOptions {
+            input: input.clone(),
+            srt: srt.clone(),
+            output_dir: output_dir.clone(),
+            ffmpeg: cli.ffmpeg.clone(),
+            sample_interval_seconds: *interval,
+            scene_threshold: *threshold,
+            min_gap_seconds: *min_gap,
+        })
+        .await?;
+        println!(
+            "{} scene candidates: {}",
+            manifest.frames.len(),
+            output_dir.display()
+        );
+        println!("Timeline: {}", output_dir.join("timeline.json").display());
+        println!("Markdown: {}", output_dir.join("frames.md").display());
+        println!("HTML: {}", output_dir.join("frames.html").display());
+        return Ok(());
+    }
     let config_path = cli.config.clone().unwrap_or_else(config::default_path);
     let app_config = config::load(&config_path)?;
     set_bcut_cooldown_seconds(app_config.bcut.cooldown_seconds);
@@ -467,6 +559,8 @@ async fn run(mut cli: Cli) -> Result<()> {
         credential_path: cli.credentials.clone(),
     })?;
     match &cli.command {
+        Some(Command::Fetch { .. }) => unreachable!("fetch command was handled above"),
+        Some(Command::Frames { .. }) => unreachable!("frames command was handled above"),
         Some(Command::Local { .. }) => unreachable!("local command was handled above"),
         Some(Command::Login) => return login(&client).await,
         Some(Command::Logout) => {
@@ -1455,5 +1549,44 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn parses_frame_extraction_options() {
+        let cli = Cli::try_parse_from([
+            "muxsift",
+            "frames",
+            "lecture.mp4",
+            "--interval",
+            "0.5",
+            "--threshold",
+            "0.08",
+            "--srt",
+            "lecture.srt",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Frames {
+                interval: 0.5,
+                threshold: 0.08,
+                min_gap: 2.0,
+                srt: Some(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_fetch_command() {
+        let cli = Cli::try_parse_from([
+            "muxsift",
+            "fetch",
+            "https://www.youtube.com/watch?v=abc",
+            "-o",
+            "media",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, Some(Command::Fetch { .. })));
     }
 }
