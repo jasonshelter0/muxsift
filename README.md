@@ -98,6 +98,10 @@ AI 提炼
 
 ## 开发
 
+### GUI 候选原型
+
+独立设计分支提供 [Liquid Glass 和 Neo-brutalism 两套交互原型](prototypes/gui/README.md)。用浏览器打开 `prototypes/gui/index.html` 比较；无需安装依赖。原型使用明确标注的示例数据，支持模拟任务和示例导出，尚未连接 Rust 后端。它们不包含在 v0.2.0 CLI/TUI 发行包中。
+
 ### 本地音视频转写与 AI 整理
 
 构建后可直接处理已有视频或音频文件。CLI 的 `local` 命令会用 FFmpeg 提取／转换音频，经 Buzz 本地 ASR 或 Bcut 云端 ASR 生成 SRT；启用 AI 配置后还会生成同名 Markdown。
