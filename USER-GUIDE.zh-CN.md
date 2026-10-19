@@ -25,9 +25,9 @@
 
 `local` 命令先通过 FFmpeg 提取／转换音频，再生成 SRT；启用 AI 配置后，还会把 SRT 整理为同名 Markdown：
 
-开发版新增场景候选帧命令：从源码构建后运行 `target/debug/muxsift frames ./lecture.mp4 -o ./lecture-frames`。它输出 `frames/` 截图、`timeline.json` 时间线、`frames.md` 图文索引和可搜索字幕的离线 `frames.html`；`--interval`、`--threshold`、`--min-gap` 可调整采样、变化敏感度和最小间隔。加 `--srt ./lecture.srt` 可把字幕按开始时间关联到最近的前一张候选帧，并写入全部索引。该功能尚未包含在 v0.1.0 发行包中，不能保证识别所有 PPT 动画或公式增量。输出目录需不存在。
+v0.2.0新增场景候选帧命令：从源码构建后运行 `target/debug/muxsift frames ./lecture.mp4 -o ./lecture-frames`。它输出 `frames/` 截图、`timeline.json` 时间线、`frames.md` 图文索引和可搜索字幕的离线 `frames.html`；`--interval`、`--threshold`、`--min-gap` 可调整采样、变化敏感度和最小间隔。加 `--srt ./lecture.srt` 可把字幕按开始时间关联到最近的前一张候选帧，并写入全部索引。该功能尚未包含在 v0.1.0 发行包中，不能保证识别所有 PPT 动画或公式增量。输出目录需不存在。
 
-开发版可用独立安装的 yt-dlp 处理单条网页视频，继续 Buzz/Bcut 转写和 AI 整理：`target/debug/muxsift web 'https://www.youtube.com/watch?v=VIDEO_ID' -o ./web-notes --asr buzz --buzz-project ~/Projects/buzz`。仅下载可省略 `--asr`；只生成 SRT 可加 `--transcript-only`；失败后加 `--resume` 复用已完成的媒体与后处理阶段。输出分放在 `media/` 和 `notes/`。可用 `--yt-dlp /路径/yt-dlp` 指定程序，或在配置的 `download.yt_dlp` 中设置。TUI 先按 `m` 选 Video 或 Transcript，再按 `a` 粘贴非 Bilibili 网页 URL；按 `c` 可设置 yt-dlp 路径，失败后按 `r` 继续。当前不处理整张播放列表，也不读取 yt-dlp 用户配置。该入口不改变 Bilibili 原生下载功能，也尚未包含在 v0.1.0 发行包中。
+v0.2.0可用独立安装的 yt-dlp 处理单条网页视频，继续 Buzz/Bcut 转写和 AI 整理：`target/debug/muxsift web 'https://www.youtube.com/watch?v=VIDEO_ID' -o ./web-notes --asr buzz --buzz-project ~/Projects/buzz`。仅下载可省略 `--asr`；只生成 SRT 可加 `--transcript-only`；失败后加 `--resume` 复用已完成的媒体与后处理阶段。输出分放在 `media/` 和 `notes/`。可用 `--yt-dlp /路径/yt-dlp` 指定程序，或在配置的 `download.yt_dlp` 中设置。TUI 先按 `m` 选 Video 或 Transcript，再按 `a` 粘贴非 Bilibili 网页 URL；按 `c` 可设置 yt-dlp 路径，失败后按 `r` 继续。当前不处理整张播放列表，也不读取 yt-dlp 用户配置。该入口不改变 Bilibili 原生下载功能，也尚未包含在 v0.1.0 发行包中。
 
 ```bash
 ./release/muxsift local ./meeting.mp4 --asr bcut -o ./notes

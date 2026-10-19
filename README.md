@@ -51,7 +51,7 @@ AI 提炼
 - 阶段检查点：下载、FFmpeg、ASR 或 AI 失败后，可用 `--resume` 或 TUI 的 `r` 从最近成功阶段继续。
 - 已存在 SRT 时可跳过下载与 ASR，直接继续 AI 整理。
 - 本地视频场景候选帧提取：按可调采样间隔和变化阈值输出截图、JSON 时间线及 Markdown 索引。
-- 开发版 CLI/TUI 可借助单独安装的 yt-dlp 获取一个网页视频，并继续转写与 AI 整理；场景帧索引可对齐已有 SRT 字幕。
+- v0.2.0 CLI/TUI 可借助单独安装的 yt-dlp 获取一个网页视频，并继续转写与 AI 整理；场景帧索引可对齐已有 SRT 字幕。
 - 中文默认 TUI、English/中文切换、CJK 光标宽度、粘贴和任务树。
 - Ubuntu x86_64 发行包，包含 `aria2c`、`ffmpeg`、Buzz bridge、许可证和双语指南。
 
@@ -122,9 +122,9 @@ target/debug/muxsift frames ./lecture.mp4 --interval 0.5 --threshold 0.1 --min-g
 target/debug/muxsift frames ./lecture.mp4 --srt ./lecture.srt -o ./lecture-with-captions
 ```
 
-实验分支另有 `frames-proto`：使用 FFmpeg `scdet`、滚动阈值和多种视觉签名筛选候选帧，并记录每个采样帧的保留或丢弃原因。它不改变上面的 `frames` 命令。用法、三段视频的对比结果和限制见 [关键帧实验说明](docs/frames-prototype.md)。
+本版本另有实验性命令 `frames-proto`：使用 FFmpeg `scdet`、滚动阈值和多种视觉签名筛选候选帧，并记录每个采样帧的保留或丢弃原因。它不改变上面的 `frames` 命令。用法、三段视频的对比结果和限制见 [关键帧实验说明](docs/frames-prototype.md)。
 
-开发版还提供单条网页视频工作流。先独立安装 `yt-dlp` 并确保它在 `PATH` 中；`web` 下载视频后可继续用 Buzz/Bcut 转写为 SRT、用已配置的 AI 生成 Markdown。`--resume` 会核对 URL 与媒体文件，再复用已完成的下载和后处理阶段。Bilibili URL 仍走原生后端；当前不处理播放列表，也不读取 yt-dlp 用户配置。
+v0.2.0还提供单条网页视频工作流。先独立安装 `yt-dlp` 并确保它在 `PATH` 中；`web` 下载视频后可继续用 Buzz/Bcut 转写为 SRT、用已配置的 AI 生成 Markdown。`--resume` 会核对 URL 与媒体文件，再复用已完成的下载和后处理阶段。Bilibili URL 仍走原生后端；当前不处理播放列表，也不读取 yt-dlp 用户配置。
 
 ```bash
 target/debug/muxsift web 'https://www.youtube.com/watch?v=VIDEO_ID' -o ./web-notes --asr buzz --buzz-project ~/Projects/buzz

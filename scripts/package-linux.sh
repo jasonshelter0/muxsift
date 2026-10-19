@@ -73,6 +73,7 @@ cp "$ROOT/distribution/start-tui.sh" "$OUT/release/start-tui.sh"
 cp "$ROOT/scripts/buzz-asr.py" "$OUT/release/libexec/buzz-asr.py"
 cp "$ROOT/distribution/THIRD-PARTY-NOTICES.txt" "$OUT/release/THIRD-PARTY-NOTICES.txt"
 cp "$ROOT/README.md" "$ROOT/USER-GUIDE.md" "$ROOT/USER-GUIDE.zh-CN.md" "$ROOT/distribution/config.example.json" "$OUT/release/"
+cp -r "$ROOT/docs" "$OUT/release/docs"
 chmod 755 "$OUT/release/muxsift" "$OUT/release/bin/aria2c" "$OUT/release/bin/ffmpeg" "$OUT/release/start-tui.sh" "$OUT/release/libexec/buzz-asr.py"
 tar -C "$OUT" -czf "$ARCHIVE" release
 (
