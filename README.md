@@ -9,7 +9,8 @@ MuxSift 是一个面向 Linux 的 Rust CLI/TUI 媒体工作流工具。它的目
 ```text
 来源适配器
   当前：Bilibili 原生后端
-  未来：yt-dlp 及其他来源
+  当前：yt-dlp 网页视频后端
+  未来：其他来源
         │
         ▼
 下载并生成媒体工件
@@ -50,14 +51,13 @@ AI 提炼
 - 阶段检查点：下载、FFmpeg、ASR 或 AI 失败后，可用 `--resume` 或 TUI 的 `r` 从最近成功阶段继续。
 - 已存在 SRT 时可跳过下载与 ASR，直接继续 AI 整理。
 - 本地视频场景候选帧提取：按可调采样间隔和变化阈值输出截图、JSON 时间线及 Markdown 索引。
-- 开发版 CLI 可借助单独安装的 yt-dlp 获取一个网页视频；场景帧索引可对齐已有 SRT 字幕。
+- 开发版 CLI/TUI 可借助单独安装的 yt-dlp 获取一个网页视频，并继续转写与 AI 整理；场景帧索引可对齐已有 SRT 字幕。
 - 中文默认 TUI、English/中文切换、CJK 光标宽度、粘贴和任务树。
 - Ubuntu x86_64 发行包，包含 `aria2c`、`ffmpeg`、Buzz bridge、许可证和双语指南。
 
 尚未完成：
 
 - 把现有 Bilibili 实现收敛为稳定的通用 `Source`/adapter 接口。
-- yt-dlp 来源适配器。
 - 用工件图统一描述视频、音频、字幕、关键帧和 AI 输出之间的依赖。
 - 用户可配置的中间文件保留策略。
 - 课程知识关键帧识别：区分 PPT 动画、代码改动和公式增量；当前场景候选帧需要人工核对。
@@ -124,12 +124,16 @@ target/debug/muxsift frames ./lecture.mp4 --srt ./lecture.srt -o ./lecture-with-
 
 实验分支另有 `frames-proto`：使用 FFmpeg `scdet`、滚动阈值和多种视觉签名筛选候选帧，并记录每个采样帧的保留或丢弃原因。它不改变上面的 `frames` 命令。用法、三段视频的对比结果和限制见 [关键帧实验说明](docs/frames-prototype.md)。
 
-开发版还提供单条网页视频获取入口。先独立安装 yt-dlp，再运行 `fetch`；下载成功后可把输出媒体交给 `local` 或 `frames`。当前仅处理一个 URL 对应的单个视频，下载目录必须不存在，且不会修改 Bilibili 原生下载流程。
+开发版还提供单条网页视频工作流。先独立安装 `yt-dlp` 并确保它在 `PATH` 中；`web` 下载视频后可继续用 Buzz/Bcut 转写为 SRT、用已配置的 AI 生成 Markdown。`--resume` 会核对 URL 与媒体文件，再复用已完成的下载和后处理阶段。Bilibili URL 仍走原生后端；当前不处理播放列表，也不读取 yt-dlp 用户配置。
 
 ```bash
-target/debug/muxsift fetch 'https://www.youtube.com/watch?v=VIDEO_ID' -o ./web-media
-# 使用 fetch 打印的实际 Media 路径作为 frames 或 local 的输入
+target/debug/muxsift web 'https://www.youtube.com/watch?v=VIDEO_ID' -o ./web-notes --asr buzz --buzz-project ~/Projects/buzz
+target/debug/muxsift web 'https://example.com/video' -o ./web-notes --asr bcut --transcript-only
+target/debug/muxsift web 'https://example.com/video' -o ./web-notes --asr buzz --resume
+# 只需下载仍可使用：muxsift fetch URL -o ./web-media
 ```
+
+TUI 按 `m` 选 Video（仅下载）或 Transcript（转写和 AI），按 `a` 粘贴非 Bilibili 网页 URL，再按 `Enter` 启动；失败后按 `r` 继续。按 `c` 在统一设置窗口的 General 分类填写 yt-dlp 路径。`web` 的输出位于指定目录的 `media/` 和 `notes/`，TUI 输出位于视频输出目录下的 `web/`。
 
 ```bash
 cargo fmt --check

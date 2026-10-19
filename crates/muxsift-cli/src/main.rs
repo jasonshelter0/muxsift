@@ -12,10 +12,10 @@ use muxsift_core::{
     AiClient, AiOptions, Aria2Manager, Aria2Options, AsrBackend, BiliClient, BuzzOptions,
     BuzzProgress, ClientOptions, DownloadProgress, Error, FetchOptions, FrameOptions,
     FramePrototypeOptions, LocalMediaEvent, LocalMediaRequest, LoginPoll, Result, ResumeWorkspace,
-    SubtitleFormat, SubtitleTrack, TranscriptFormat, extract_frame_prototype, extract_scene_frames,
-    fetch_with_yt_dlp, final_output_path, final_output_path_with_extension, mux, mux_audio,
-    process_local_media, resolve_video_input, sanitize_filename, set_bcut_cooldown_seconds,
-    transcribe_audio_with_buzz,
+    SubtitleFormat, SubtitleTrack, TranscriptFormat, WebMediaEvent, WebMediaRequest,
+    extract_frame_prototype, extract_scene_frames, fetch_with_yt_dlp, final_output_path,
+    final_output_path_with_extension, mux, mux_audio, process_local_media, process_web_media,
+    resolve_video_input, sanitize_filename, set_bcut_cooldown_seconds, transcribe_audio_with_buzz,
 };
 use muxsift_tui::{Language, MediaBackend, TuiOptions};
 use qrcode::{QrCode, render::unicode};
@@ -185,6 +185,32 @@ enum Command {
         /// yt-dlp executable or absolute path.
         #[arg(long, default_value = "yt-dlp")]
         yt_dlp: PathBuf,
+    },
+    /// Download one webpage video and optionally transcribe it into SRT and AI notes.
+    Web {
+        /// Public video URL supported by the installed yt-dlp.
+        url: String,
+        /// New task directory containing media/ and optional notes/.
+        #[arg(short, long)]
+        output: PathBuf,
+        /// yt-dlp executable or absolute path.
+        #[arg(long)]
+        yt_dlp: Option<PathBuf>,
+        /// Also transcribe the downloaded media with Buzz or Bcut.
+        #[arg(long, value_enum)]
+        asr: Option<AsrBackendArg>,
+        /// Generate only SRT when --asr is set; skip AI notes.
+        #[arg(long, requires = "asr")]
+        transcript_only: bool,
+        /// Reuse verified downloaded media and completed ASR stages.
+        #[arg(long)]
+        resume: bool,
+        /// Override the configured Buzz checkout.
+        #[arg(long, requires = "asr")]
+        buzz_project: Option<PathBuf>,
+        /// Override the configured Buzz model.
+        #[arg(long, requires = "asr")]
+        buzz_model: Option<String>,
     },
     /// Extract scene-change frame candidates and a timestamped timeline from a local video.
     Frames {
@@ -543,6 +569,90 @@ async fn run(mut cli: Cli) -> Result<()> {
             .clone()
             .or_else(|| app_config.asr.buzz.language.clone()),
     };
+    if let Some(Command::Web {
+        url,
+        output,
+        yt_dlp,
+        asr,
+        transcript_only,
+        resume,
+        buzz_project,
+        buzz_model,
+    }) = &cli.command
+    {
+        if cli.media_proxy.is_some() {
+            return Err(Error::InvalidInput(
+                "web supports --proxy, but not the Bilibili-only --media-proxy".into(),
+            ));
+        }
+        let client = BiliClient::new(ClientOptions {
+            proxy: cli.proxy.clone(),
+            media_proxy: None,
+            no_proxy: cli.no_proxy,
+            credential_path: cli.credentials.clone(),
+        })?;
+        let ai = if asr.is_some() && !transcript_only {
+            Some(ai_client_from_config(&app_config)?)
+        } else {
+            None
+        };
+        let mut web_buzz = buzz_options.clone();
+        if let Some(project) = buzz_project {
+            web_buzz.project_dir = project.clone();
+        }
+        if let Some(model) = buzz_model {
+            web_buzz.model = model.clone();
+        }
+        let result = process_web_media(
+            &WebMediaRequest {
+                url: url.clone(),
+                output_dir: output.clone(),
+                yt_dlp: yt_dlp
+                    .clone()
+                    .unwrap_or_else(|| app_config.download.yt_dlp.clone()),
+                ffmpeg: cli.ffmpeg.clone(),
+                proxy: cli.proxy.clone(),
+                no_proxy: cli.no_proxy,
+                asr: asr.map(AsrBackend::from),
+                buzz: web_buzz,
+                resume: *resume,
+                make_markdown: asr.is_some() && !transcript_only,
+                control: None,
+            },
+            &client,
+            ai.as_ref(),
+            |event| match event {
+                WebMediaEvent::Stage(stage)
+                | WebMediaEvent::Local(LocalMediaEvent::Stage(stage)) => {
+                    eprintln!("{stage}")
+                }
+                WebMediaEvent::Local(LocalMediaEvent::Bcut(
+                    muxsift_core::BcutProgress::Uploading {
+                        completed, total, ..
+                    },
+                )) => eprintln!("Bcut upload: {completed}/{total} parts"),
+                WebMediaEvent::Local(LocalMediaEvent::Buzz(BuzzProgress::Transcribing {
+                    processed_seconds,
+                    total_seconds,
+                })) => eprint!(
+                    "\rBuzz: {} / {}",
+                    format_media_time(processed_seconds),
+                    format_media_time(total_seconds)
+                ),
+                _ => {}
+            },
+        )
+        .await?;
+        eprintln!();
+        println!("Media: {}", result.media.display());
+        if let Some(transcript) = result.transcript {
+            println!("SRT: {}", transcript.display());
+        }
+        if let Some(markdown) = result.markdown {
+            println!("Markdown: {}", markdown.display());
+        }
+        return Ok(());
+    }
     if let Some(Command::Local {
         input,
         asr,
@@ -642,6 +752,7 @@ async fn run(mut cli: Cli) -> Result<()> {
     })?;
     match &cli.command {
         Some(Command::Fetch { .. }) => unreachable!("fetch command was handled above"),
+        Some(Command::Web { .. }) => unreachable!("web command was handled above"),
         Some(Command::Frames { .. }) => unreachable!("frames command was handled above"),
         Some(Command::FramesProto { .. }) => {
             unreachable!("frames-proto command was handled above")
@@ -672,6 +783,7 @@ async fn run(mut cli: Cli) -> Result<()> {
                 subtitle_output: app_config.paths.subtitle.clone(),
                 transcript_output: app_config.paths.transcript.clone(),
                 ffmpeg: cli.ffmpeg.clone(),
+                yt_dlp: app_config.download.yt_dlp.clone(),
                 backend: match backend {
                     DownloadBackend::Http => MediaBackend::Http,
                     DownloadBackend::Aria2 => MediaBackend::Aria2,
@@ -1673,5 +1785,39 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(cli.command, Some(Command::Fetch { .. })));
+    }
+
+    #[test]
+    fn parses_web_pipeline_and_resume_options() {
+        let cli = Cli::try_parse_from([
+            "muxsift",
+            "web",
+            "https://example.org/video",
+            "-o",
+            "notes",
+            "--asr",
+            "buzz",
+            "--resume",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Web {
+                asr: Some(AsrBackendArg::Buzz),
+                resume: true,
+                ..
+            })
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "muxsift",
+                "web",
+                "https://example.org/video",
+                "-o",
+                "notes",
+                "--transcript-only",
+            ])
+            .is_err()
+        );
     }
 }

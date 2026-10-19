@@ -4,6 +4,7 @@ use std::{
     process::Stdio,
 };
 
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use url::Url;
 
@@ -18,6 +19,14 @@ pub struct FetchOptions {
     pub proxy: Option<String>,
     pub no_proxy: bool,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FetchManifest {
+    source_url: String,
+    media: PathBuf,
+}
+
+const FETCH_MANIFEST: &str = "muxsift-fetch.json";
 
 /// Download one public media URL into a new directory using an installed yt-dlp.
 pub async fn fetch_with_yt_dlp(options: &FetchOptions) -> Result<PathBuf> {
@@ -49,7 +58,7 @@ pub async fn fetch_with_yt_dlp(options: &FetchOptions) -> Result<PathBuf> {
     command
         .kill_on_drop(true)
         .args(["--ignore-config", "--no-playlist", "--playlist-items", "1"])
-        .args(["--no-overwrites", "--newline", "-P"])
+        .args(["--no-overwrites", "--no-progress", "-P"])
         .arg(temporary.path())
         .args([
             "-o",
@@ -66,11 +75,11 @@ pub async fn fetch_with_yt_dlp(options: &FetchOptions) -> Result<PathBuf> {
     } else if let Some(proxy) = &options.proxy {
         command.arg("--proxy").arg(proxy);
     }
-    let status = command
+    let output = command
         .arg(&options.url)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
         .await
         .map_err(|source| {
             if source.kind() == std::io::ErrorKind::NotFound {
@@ -82,8 +91,20 @@ pub async fn fetch_with_yt_dlp(options: &FetchOptions) -> Result<PathBuf> {
                 }
             }
         })?;
-    if !status.success() {
-        return Err(Error::YtDlpFailed(status.code()));
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .rev()
+            .take(8)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(Error::YtDlpFailed {
+            code: output.status.code(),
+            detail,
+        });
     }
     let printed_path = fs::read_to_string(&path_file).map_err(|source| Error::Io {
         path: path_file.clone(),
@@ -124,6 +145,17 @@ pub async fn fetch_with_yt_dlp(options: &FetchOptions) -> Result<PathBuf> {
         path: path_file,
         source,
     })?;
+    let manifest = FetchManifest {
+        source_url: options.url.clone(),
+        media: relative.to_owned(),
+    };
+    let manifest_path = temporary.path().join(FETCH_MANIFEST);
+    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?).map_err(|source| {
+        Error::Io {
+            path: manifest_path,
+            source,
+        }
+    })?;
     let final_path = options.output_dir.join(relative);
     fs::rename(temporary.path(), &options.output_dir).map_err(|source| Error::Io {
         path: options.output_dir.clone(),
@@ -132,7 +164,51 @@ pub async fn fetch_with_yt_dlp(options: &FetchOptions) -> Result<PathBuf> {
     Ok(final_path)
 }
 
-fn validate_url(value: &str) -> Result<()> {
+/// Reuse a completed acquisition only when its URL and media file still match.
+pub(crate) fn reuse_fetched_media(options: &FetchOptions) -> Result<PathBuf> {
+    validate_url(&options.url)?;
+    let manifest_path = options.output_dir.join(FETCH_MANIFEST);
+    let bytes = fs::read(&manifest_path).map_err(|source| Error::Io {
+        path: manifest_path.clone(),
+        source,
+    })?;
+    let manifest: FetchManifest = serde_json::from_slice(&bytes).map_err(|error| {
+        Error::InvalidInput(format!(
+            "invalid fetch manifest {}: {error}",
+            manifest_path.display()
+        ))
+    })?;
+    if manifest.source_url != options.url {
+        return Err(Error::InvalidInput(
+            "saved media belongs to a different URL; choose a new output directory".into(),
+        ));
+    }
+    let root = options
+        .output_dir
+        .canonicalize()
+        .map_err(|source| Error::Io {
+            path: options.output_dir.clone(),
+            source,
+        })?;
+    let media = root
+        .join(&manifest.media)
+        .canonicalize()
+        .map_err(|source| Error::Io {
+            path: root.join(&manifest.media),
+            source,
+        })?;
+    if !media.starts_with(&root)
+        || !media.is_file()
+        || media.metadata().is_ok_and(|meta| meta.len() == 0)
+    {
+        return Err(Error::InvalidInput(
+            "saved media is missing, empty, or outside its output directory".into(),
+        ));
+    }
+    Ok(media)
+}
+
+pub(crate) fn validate_url(value: &str) -> Result<()> {
     let url = Url::parse(value)
         .map_err(|_| Error::InvalidInput("fetch requires an HTTP or HTTPS URL".into()))?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
@@ -145,7 +221,8 @@ fn validate_url(value: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_url;
+    use super::{FETCH_MANIFEST, FetchManifest, FetchOptions, reuse_fetched_media, validate_url};
+    use std::{fs, path::PathBuf};
 
     #[test]
     fn fetch_accepts_only_web_urls() {
@@ -153,5 +230,48 @@ mod tests {
         assert!(validate_url("http://127.0.0.1:8080/video.mp4").is_ok());
         assert!(validate_url("file:///tmp/video.mp4").is_err());
         assert!(validate_url("relative/path.mp4").is_err());
+    }
+
+    #[test]
+    fn resume_reuses_only_the_same_url_and_a_nonempty_file_inside_the_task() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("media");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("video.mp4"), b"media").unwrap();
+        let options = FetchOptions {
+            url: "https://example.org/watch?v=1".into(),
+            output_dir: root.clone(),
+            executable: PathBuf::from("yt-dlp"),
+            ffmpeg: PathBuf::from("ffmpeg"),
+            proxy: None,
+            no_proxy: false,
+        };
+        let write_manifest = |url: &str, media: &str| {
+            fs::write(
+                root.join(FETCH_MANIFEST),
+                serde_json::to_vec(&FetchManifest {
+                    source_url: url.into(),
+                    media: PathBuf::from(media),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        write_manifest(&options.url, "video.mp4");
+        assert_eq!(
+            reuse_fetched_media(&options).unwrap(),
+            root.join("video.mp4")
+        );
+
+        write_manifest("https://example.org/watch?v=2", "video.mp4");
+        assert!(reuse_fetched_media(&options).is_err());
+
+        write_manifest(&options.url, "../outside.mp4");
+        fs::write(temporary.path().join("outside.mp4"), b"outside").unwrap();
+        assert!(reuse_fetched_media(&options).is_err());
+
+        write_manifest(&options.url, "video.mp4");
+        fs::write(root.join("video.mp4"), []).unwrap();
+        assert!(reuse_fetched_media(&options).is_err());
     }
 }

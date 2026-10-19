@@ -14,8 +14,9 @@ use muxsift_core::{
     AiClient, AiOptions, Aria2Manager, Aria2Options, AsrBackend, BcutProgress, BiliClient,
     BuzzOptions, BuzzProgress, ClientOptions, DownloadControl, DownloadProgress, Error,
     LocalMediaEvent, LocalMediaRequest, ResumeWorkspace, SubtitleFormat, TranscriptFormat,
-    VideoInput, final_output_path_with_extension, mux, mux_audio, process_local_media,
-    resolve_video_input, sanitize_filename, set_bcut_cooldown_seconds, transcribe_audio_with_buzz,
+    VideoInput, WebMediaEvent, WebMediaRequest, final_output_path_with_extension, mux, mux_audio,
+    process_local_media, process_web_media, resolve_video_input, sanitize_filename,
+    set_bcut_cooldown_seconds, transcribe_audio_with_buzz,
 };
 use qrcode::{QrCode, render::unicode};
 use ratatui::{
@@ -29,6 +30,7 @@ use ratatui::{
 };
 use serde_json::Value;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use url::Url;
 
 #[derive(Clone)]
 pub struct TuiOptions {
@@ -38,6 +40,7 @@ pub struct TuiOptions {
     pub subtitle_output: PathBuf,
     pub transcript_output: PathBuf,
     pub ffmpeg: PathBuf,
+    pub yt_dlp: PathBuf,
     pub backend: MediaBackend,
     pub aria2_options: Aria2Options,
     pub aria2_manager: Option<Aria2Manager>,
@@ -189,7 +192,7 @@ impl SettingsSection {
     fn fields(self) -> &'static [SettingsField] {
         use SettingsField::*;
         match self {
-            Self::General => &[Language, DownloadBackend],
+            Self::General => &[Language, DownloadBackend, YtDlp],
             Self::Asr => &[
                 AsrBackend,
                 BcutCooldown,
@@ -222,6 +225,7 @@ impl SettingsSection {
 enum SettingsField {
     Language,
     DownloadBackend,
+    YtDlp,
     AsrBackend,
     BcutCooldown,
     BuzzProject,
@@ -240,6 +244,7 @@ impl SettingsField {
         match self {
             Self::Language => tr(language, "Interface language", "界面语言"),
             Self::DownloadBackend => tr(language, "Download backend", "下载后端"),
+            Self::YtDlp => tr(language, "yt-dlp executable", "yt-dlp 程序"),
             Self::AsrBackend => tr(language, "ASR backend", "转写后端"),
             Self::BcutCooldown => tr(language, "Bcut cooldown (seconds)", "Bcut 间隔（秒）"),
             Self::BuzzProject => tr(language, "Buzz project directory", "Buzz 项目目录"),
@@ -327,7 +332,7 @@ impl Mode {
 struct Task {
     id: usize,
     input: String,
-    local: bool,
+    source: TaskSource,
     status: String,
     title: String,
     mode: Mode,
@@ -348,6 +353,13 @@ struct Task {
     transfers: HashMap<String, TransferProgress>,
     buzz_progress: Option<BuzzTaskProgress>,
     ai_output: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskSource {
+    Bilibili,
+    Local,
+    Web,
 }
 
 #[derive(Debug)]
@@ -559,6 +571,44 @@ fn local_directories(files: &[LocalFile]) -> HashSet<PathBuf> {
         }
     }
     directories
+}
+
+fn is_web_source(raw: &str) -> bool {
+    let Ok(url) = Url::parse(raw) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    !(host == "bilibili.com"
+        || host.ends_with(".bilibili.com")
+        || host == "b23.tv"
+        || host.ends_with(".b23.tv"))
+}
+
+fn web_task_title(raw: &str) -> String {
+    let Ok(url) = Url::parse(raw) else {
+        return raw.to_owned();
+    };
+    let host = url.host_str().unwrap_or("web");
+    let last = url
+        .path_segments()
+        .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
+        .unwrap_or("video");
+    format!("{host} / {last}")
+}
+
+fn web_task_output_dir(root: &Path, raw: &str) -> PathBuf {
+    let host = Url::parse(raw)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "web".into());
+    let hash = raw.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    root.join("web")
+        .join(format!("{}-{hash:016x}", sanitize_filename(&host)))
 }
 
 fn local_directory_counts(
@@ -902,7 +952,23 @@ impl App {
             return;
         }
         if let Some(field) = self.settings_editing {
-            self.save_buzz_field(options, field, raw);
+            if field == SettingsField::YtDlp {
+                if raw.trim().is_empty() {
+                    self.settings_message = "yt-dlp executable cannot be empty".into();
+                } else {
+                    let path = expand_home_path(&raw);
+                    match update_config_yt_dlp(&self.config_path, &path) {
+                        Ok(()) => {
+                            options.yt_dlp = PathBuf::from(path);
+                            self.settings_message = "saved yt-dlp executable".into();
+                            self.finish_settings_edit();
+                        }
+                        Err(error) => self.settings_message = format!("config error · {error}"),
+                    }
+                }
+            } else {
+                self.save_buzz_field(options, field, raw);
+            }
             return;
         }
         if let Some(field) = self.ai_editing {
@@ -943,9 +1009,15 @@ impl App {
             if let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) {
                 if !task.running {
                     task.input = raw.clone();
-                    task.local = Path::new(&raw).is_file();
+                    task.source = if Path::new(&raw).is_file() {
+                        TaskSource::Local
+                    } else if is_web_source(&raw) {
+                        TaskSource::Web
+                    } else {
+                        TaskSource::Bilibili
+                    };
                     task.title = raw;
-                    task.mode = if task.local {
+                    task.mode = if task.source == TaskSource::Local {
                         Mode::Transcript
                     } else {
                         self.mode
@@ -967,7 +1039,7 @@ impl App {
                 self.tasks.push(Task {
                     id,
                     input: local_path.display().to_string(),
-                    local: true,
+                    source: TaskSource::Local,
                     title,
                     status: "queued · local media → SRT → AI notes".into(),
                     mode: Mode::Transcript,
@@ -998,6 +1070,40 @@ impl App {
                 || raw.starts_with("~/")
             {
                 self.auth_status = format!("local file not found or not a regular file: {raw}");
+            } else if is_web_source(&raw) {
+                if matches!(self.mode, Mode::Audio | Mode::Subtitle) {
+                    self.auth_status = "web URLs currently support Video or Transcript mode".into();
+                } else {
+                    let id = self.next_id;
+                    self.next_id += 1;
+                    self.tasks.push(Task {
+                        id,
+                        input: raw.clone(),
+                        source: TaskSource::Web,
+                        title: web_task_title(&raw),
+                        status: "queued · yt-dlp → media".into(),
+                        mode: self.mode,
+                        selected: false,
+                        running: false,
+                        quality: None,
+                        codec: None,
+                        page: 1,
+                        subtitle_format: SubtitleFormat::Srt,
+                        transcript_format: TranscriptFormat::Srt,
+                        control: None,
+                        grouped: false,
+                        group_first: false,
+                        group_last: false,
+                        group_output_name: None,
+                        group_key: None,
+                        local_output_subdir: None,
+                        transfers: HashMap::new(),
+                        buzz_progress: None,
+                        ai_output: None,
+                    });
+                    self.cursor = self.tasks.len() - 1;
+                    self.show_welcome = false;
+                }
             } else {
                 self.request_pages(raw, options);
             }
@@ -1047,6 +1153,7 @@ impl App {
         match field {
             SettingsField::Language => self.language.label().into(),
             SettingsField::DownloadBackend => options.backend.label().into(),
+            SettingsField::YtDlp => options.yt_dlp.display().to_string(),
             SettingsField::AsrBackend => match options.asr_backend {
                 AsrBackend::Bcut => "Bcut",
                 AsrBackend::Buzz => "Buzz",
@@ -1097,6 +1204,12 @@ impl App {
                     }
                     Err(error) => self.settings_message = format!("config error · {error}"),
                 }
+            }
+            SettingsField::YtDlp => {
+                self.settings_editing = Some(SettingsField::YtDlp);
+                self.input = self.settings_value(options, SettingsField::YtDlp);
+                self.input_cursor = self.input.chars().count();
+                self.editing = true;
             }
             SettingsField::AsrBackend => {
                 let backend = match options.asr_backend {
@@ -1371,7 +1484,7 @@ impl App {
                 self.tasks.push(Task {
                     id,
                     input: file.path.display().to_string(),
-                    local: true,
+                    source: TaskSource::Local,
                     title: file.relative.display().to_string(),
                     status: "queued · local media → SRT → AI notes".into(),
                     mode: Mode::Transcript,
@@ -1422,7 +1535,7 @@ impl App {
                 self.tasks.push(Task {
                     id,
                     input: picker.raw.clone(),
-                    local: false,
+                    source: TaskSource::Bilibili,
                     title: page.part.clone(),
                     status: "queued".into(),
                     mode: self.mode,
@@ -1494,7 +1607,10 @@ impl App {
         task.transfers.clear();
         task.buzz_progress = None;
         let raw = task.input.clone();
-        let local = task.local;
+        let source = task.source;
+        let resume = resume
+            || (source == TaskSource::Web
+                && web_task_output_dir(&options.video_output, &task.input).is_dir());
         let mode = task.mode;
         let quality = task.quality;
         let codec = task.codec.clone();
@@ -1511,7 +1627,7 @@ impl App {
         tokio::spawn(async move {
             let result = execute_task(
                 &raw,
-                local,
+                source,
                 mode,
                 id,
                 page,
@@ -1688,7 +1804,7 @@ impl App {
 
     fn toggle_pause_current(&mut self) {
         if let Some(task) = self.tasks.get_mut(self.cursor) {
-            if task.local {
+            if task.source != TaskSource::Bilibili {
                 return;
             }
             if let Some(control) = &task.control {
@@ -2138,10 +2254,64 @@ struct TaskOutput {
     ai_output: Option<PathBuf>,
 }
 
+fn report_local_event(
+    sender: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    index: usize,
+    started: Instant,
+    event: LocalMediaEvent,
+) {
+    match event {
+        LocalMediaEvent::Stage(stage) => {
+            let _ = sender.send(AppEvent::Phase {
+                index,
+                message: stage.into(),
+            });
+        }
+        LocalMediaEvent::Bcut(event) => {
+            let message = match event {
+                BcutProgress::WaitingForSlot => "Bcut: waiting for slot".into(),
+                BcutProgress::PreparingUpload => "Bcut: preparing upload".into(),
+                BcutProgress::Uploading {
+                    completed, total, ..
+                } => format!("Bcut: uploading {completed}/{total}"),
+                BcutProgress::CreatingTask => "Bcut: creating task".into(),
+                BcutProgress::Recognizing { elapsed_seconds } => {
+                    format!("Bcut: recognizing · {elapsed_seconds}s")
+                }
+                BcutProgress::Rendering => "Bcut: rendering SRT".into(),
+            };
+            let _ = sender.send(AppEvent::Phase { index, message });
+        }
+        LocalMediaEvent::Buzz(BuzzProgress::Transcribing {
+            processed_seconds,
+            total_seconds,
+        }) => {
+            let _ = sender.send(AppEvent::BuzzProgress {
+                index,
+                processed_seconds,
+                total_seconds,
+                elapsed_seconds: started.elapsed().as_secs_f64(),
+            });
+        }
+        LocalMediaEvent::Buzz(event) => {
+            let message = match event {
+                BuzzProgress::WaitingForSlot => "Buzz: waiting for local ASR slot",
+                BuzzProgress::LoadingModel => "Buzz: loading local model",
+                BuzzProgress::Rendering => "Buzz: rendering transcript",
+                BuzzProgress::Transcribing { .. } => unreachable!(),
+            };
+            let _ = sender.send(AppEvent::Phase {
+                index,
+                message: message.into(),
+            });
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_task(
     raw: &str,
-    local: bool,
+    source: TaskSource,
     mode: Mode,
     index: usize,
     page: usize,
@@ -2159,7 +2329,7 @@ async fn execute_task(
 ) -> Result<TaskOutput, Error> {
     let client = BiliClient::new(client_options.clone())?;
     let ai_client = options.ai.clone().map(AiClient::new).transpose()?;
-    if local {
+    if source == TaskSource::Local {
         let ai = ai_client.as_ref().ok_or_else(|| {
             Error::InvalidInput(
                 "Enable AI in C settings and set its API key environment variable for local media notes"
@@ -2179,57 +2349,54 @@ async fn execute_task(
             control: Some(control.clone()),
         };
         let started = Instant::now();
-        let output = process_local_media(&request, &client, Some(ai), |event| match event {
-            LocalMediaEvent::Stage(stage) => {
-                let _ = sender.send(AppEvent::Phase {
-                    index,
-                    message: stage.into(),
-                });
-            }
-            LocalMediaEvent::Bcut(event) => {
-                let message = match event {
-                    BcutProgress::WaitingForSlot => "Bcut: waiting for slot".into(),
-                    BcutProgress::PreparingUpload => "Bcut: preparing upload".into(),
-                    BcutProgress::Uploading {
-                        completed, total, ..
-                    } => {
-                        format!("Bcut: uploading {completed}/{total}")
-                    }
-                    BcutProgress::CreatingTask => "Bcut: creating task".into(),
-                    BcutProgress::Recognizing { elapsed_seconds } => {
-                        format!("Bcut: recognizing · {elapsed_seconds}s")
-                    }
-                    BcutProgress::Rendering => "Bcut: rendering SRT".into(),
-                };
-                let _ = sender.send(AppEvent::Phase { index, message });
-            }
-            LocalMediaEvent::Buzz(BuzzProgress::Transcribing {
-                processed_seconds,
-                total_seconds,
-            }) => {
-                let _ = sender.send(AppEvent::BuzzProgress {
-                    index,
-                    processed_seconds,
-                    total_seconds,
-                    elapsed_seconds: started.elapsed().as_secs_f64(),
-                });
-            }
-            LocalMediaEvent::Buzz(event) => {
-                let message = match event {
-                    BuzzProgress::WaitingForSlot => "Buzz: waiting for local ASR slot",
-                    BuzzProgress::LoadingModel => "Buzz: loading local model",
-                    BuzzProgress::Rendering => "Buzz: rendering transcript",
-                    BuzzProgress::Transcribing { .. } => unreachable!(),
-                };
-                let _ = sender.send(AppEvent::Phase {
-                    index,
-                    message: message.into(),
-                });
-            }
+        let output = process_local_media(&request, &client, Some(ai), |event| {
+            report_local_event(sender, index, started, event);
         })
         .await?;
         return Ok(TaskOutput {
             path: output.transcript,
+            ai_output: output.markdown,
+        });
+    }
+    if source == TaskSource::Web {
+        if !matches!(mode, Mode::Video | Mode::Transcript) {
+            return Err(Error::InvalidInput(
+                "web URLs currently support Video or Transcript mode".into(),
+            ));
+        }
+        let make_notes = mode == Mode::Transcript;
+        if make_notes && ai_client.is_none() {
+            return Err(Error::InvalidInput(
+                "Enable AI in C settings and set its API key to make web media notes".into(),
+            ));
+        }
+        let request = WebMediaRequest {
+            url: raw.to_owned(),
+            output_dir: web_task_output_dir(&options.video_output, raw),
+            yt_dlp: options.yt_dlp.clone(),
+            ffmpeg: options.ffmpeg.clone(),
+            proxy: client_options.proxy.clone(),
+            no_proxy: client_options.no_proxy,
+            asr: make_notes.then_some(options.asr_backend),
+            buzz: options.buzz.clone(),
+            resume,
+            make_markdown: make_notes,
+            control: Some(control.clone()),
+        };
+        let started = Instant::now();
+        let output =
+            process_web_media(&request, &client, ai_client.as_ref(), |event| match event {
+                WebMediaEvent::Stage(stage) => {
+                    let _ = sender.send(AppEvent::Phase {
+                        index,
+                        message: stage.into(),
+                    });
+                }
+                WebMediaEvent::Local(event) => report_local_event(sender, index, started, event),
+            })
+            .await?;
+        return Ok(TaskOutput {
+            path: output.transcript.unwrap_or(output.media),
             ai_output: output.markdown,
         });
     }
@@ -2825,6 +2992,47 @@ fn update_config_backend(path: &Path, backend: MediaBackend) -> Result<(), Error
             "backend".into(),
             Value::String(backend.label().to_ascii_lowercase()),
         );
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| Error::Io {
+            path: parent.to_owned(),
+            source,
+        })?;
+    }
+    let text = serde_json::to_string_pretty(&root)
+        .map_err(|error| Error::InvalidInput(format!("could not serialize config: {error}")))?;
+    std::fs::write(path, text).map_err(|source| Error::Io {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+fn update_config_yt_dlp(path: &Path, executable: &str) -> Result<(), Error> {
+    let mut root = match std::fs::read_to_string(path) {
+        Ok(contents) => serde_json::from_str::<Value>(&contents)
+            .map_err(|error| Error::InvalidInput(format!("invalid config: {error}")))?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Value::Object(Default::default()),
+        Err(source) => {
+            return Err(Error::Io {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    };
+    if !root.is_object() {
+        root = Value::Object(Default::default());
+    }
+    let download = root
+        .as_object_mut()
+        .expect("config object")
+        .entry("download")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !download.is_object() {
+        *download = Value::Object(Default::default());
+    }
+    download
+        .as_object_mut()
+        .expect("download object")
+        .insert("yt_dlp".into(), Value::String(executable.to_owned()));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| Error::Io {
             path: parent.to_owned(),
@@ -3584,8 +3792,10 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App, options: &TuiOptions) {
                 Style::default().fg(Color::Cyan),
             ),
             Span::styled(
-                if task.local {
+                if task.source == TaskSource::Local {
                     tr(app.language, "[local] ", "[本地] ").to_owned()
+                } else if task.source == TaskSource::Web {
+                    tr(app.language, "[web/yt-dlp] ", "[网页/yt-dlp] ").to_owned()
                 } else {
                     format!(
                         "[p{} {} {}] ",
@@ -5085,6 +5295,20 @@ fn tui_resume_identity(
 mod tests {
     use super::*;
 
+    #[test]
+    fn web_source_routes_only_non_bilibili_http_urls() {
+        assert!(is_web_source("https://www.youtube.com/watch?v=abc"));
+        assert!(is_web_source("https://www.xiaohongshu.com/explore/abc"));
+        assert!(!is_web_source("https://www.bilibili.com/video/BV123"));
+        assert!(!is_web_source("https://b23.tv/abc"));
+        assert!(!is_web_source("BV123"));
+        assert!(!is_web_source("/tmp/lecture.mp4"));
+        let root = Path::new("/tmp/muxsift-web-test");
+        let a = web_task_output_dir(root, "https://example.org/a");
+        assert_eq!(a, web_task_output_dir(root, "https://example.org/a"));
+        assert_ne!(a, web_task_output_dir(root, "https://example.org/b"));
+    }
+
     fn transfer() -> TransferProgress {
         TransferProgress {
             downloaded: 100,
@@ -5248,7 +5472,11 @@ mod tests {
         picker.selected.fill(true);
         app.confirm_pages();
         assert_eq!(app.tasks.len(), 4);
-        assert!(app.tasks.iter().all(|task| task.local && task.grouped));
+        assert!(
+            app.tasks
+                .iter()
+                .all(|task| task.source == TaskSource::Local && task.grouped)
+        );
         let outputs: HashSet<_> = app
             .tasks
             .iter()

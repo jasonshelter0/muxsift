@@ -13,3 +13,4 @@ tempfile.workspace = true
 ratatui.workspace = true
 tokio.workspace = true
 unicode-width.workspace = true
+url.workspace = true

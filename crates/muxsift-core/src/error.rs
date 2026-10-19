@@ -48,8 +48,8 @@ pub enum Error {
     Aria2(String),
     #[error("yt-dlp was not found: {0}. Install yt-dlp or pass --yt-dlp /path/to/yt-dlp")]
     YtDlpMissing(String),
-    #[error("yt-dlp failed with exit code {0:?}")]
-    YtDlpFailed(Option<i32>),
+    #[error("yt-dlp failed with exit code {code:?}: {detail}")]
+    YtDlpFailed { code: Option<i32>, detail: String },
     #[error("Bcut transcription failed: {0}")]
     Bcut(String),
     #[error("Buzz local transcription failed: {0}")]

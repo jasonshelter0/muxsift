@@ -15,6 +15,7 @@ mod models;
 mod output;
 mod resume;
 mod subtitle;
+mod web;
 
 pub use ai::{AiClient, AiOptions};
 pub use aria2::{Aria2Manager, Aria2Options};
@@ -42,3 +43,4 @@ pub use models::{
 pub use output::{final_output_path, final_output_path_with_extension, sanitize_filename};
 pub use resume::ResumeWorkspace;
 pub use subtitle::{SubtitleFormat, SubtitleTrack};
+pub use web::{WebMediaEvent, WebMediaOutput, WebMediaRequest, process_web_media};

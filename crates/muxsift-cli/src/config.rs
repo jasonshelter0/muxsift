@@ -109,6 +109,7 @@ impl Default for BcutConfig {
 pub struct DownloadConfig {
     pub backend: String,
     pub aria2: PathBuf,
+    pub yt_dlp: PathBuf,
     pub max_concurrent_downloads: usize,
     pub split: u8,
     pub min_split_size: String,
@@ -119,6 +120,7 @@ impl Default for DownloadConfig {
         Self {
             backend: "aria2".into(),
             aria2: PathBuf::from("auto"),
+            yt_dlp: PathBuf::from("yt-dlp"),
             max_concurrent_downloads: 3,
             split: 10,
             min_split_size: "15M".into(),

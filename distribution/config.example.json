@@ -8,6 +8,7 @@
   "download": {
     "backend": "aria2",
     "aria2": "auto",
+    "yt_dlp": "yt-dlp",
     "max_concurrent_downloads": 3,
     "split": 10,
     "min_split_size": "15M"
